@@ -51,9 +51,9 @@ class NotificationManager internal constructor(
         set(value) {
             // Clear bitmap cache if artwork changes
             if (field?.artworkUrl != value?.artworkUrl) {
-                val holder = getCurrentItemHolder()
-                if (holder != null) {
-                    holder.artworkBitmap = null
+                if (currentItemHolder != null) {
+                    currentItemHolder.artworkBitmap = null
+                }
             }
             field = value
             invalidate()
@@ -155,9 +155,9 @@ class NotificationManager internal constructor(
     var forwardIcon: Int? = null
     var rewindIcon: Int? = null
 
-    private fun getCurrentItemHolder(): AudioItemHolder? {
-        return player.currentMediaItem?.localConfiguration?.tag as AudioItemHolder?
-    }
+    private val currentItemHolder get() =  (
+            player.currentMediaItem?.localConfiguration?.tag as AudioItemHolder
+    )
 
 
     init {
@@ -183,12 +183,16 @@ class NotificationManager internal constructor(
                     player: Player,
                     windowIndex: Int
                 ): MediaDescriptionCompat {
-                    val currentNotificationMetadata = if (windowIndex == player.currentMediaItemIndex)
-                        notificationMetadata else null
+                    val currentNotificationMetadata =
+                        if (windowIndex == player.currentMediaItemIndex)
+                            notificationMetadata else null
                     val mediaItem = player.getMediaItemAt(windowIndex)
                     val audioItemHolder = (mediaItem.localConfiguration?.tag as AudioItemHolder)
-                    var title = currentNotificationMetadata?.title ?: mediaItem.mediaMetadata.title ?: audioItemHolder.audioItem.title
-                    var artist = currentNotificationMetadata?.artist ?: mediaItem.mediaMetadata.artist ?: audioItemHolder.audioItem.artist
+                    var title = currentNotificationMetadata?.title ?: mediaItem.mediaMetadata.title
+                    ?: audioItemHolder.audioItem.title
+                    var artist =
+                        currentNotificationMetadata?.artist ?: mediaItem.mediaMetadata.artist
+                        ?: audioItemHolder.audioItem.artist
                     return MediaDescriptionCompat.Builder().apply {
                         setTitle(title)
                         setSubtitle(artist)
@@ -242,12 +246,8 @@ class NotificationManager internal constructor(
             context: Context,
             instanceId: Int
         ): MutableMap<String, NotificationCompat.Action> {
+            if (!needsCustomActionsToAddMissingButtons) return mutableMapOf()
             return mutableMapOf(
-                STOP to createNotificationAction(
-                    stopIcon ?: DEFAULT_STOP_ICON,
-                    STOP,
-                    instanceId
-                ),
                 REWIND to createNotificationAction(
                     rewindIcon ?: DEFAULT_REWIND_ICON,
                     REWIND,
@@ -257,21 +257,27 @@ class NotificationManager internal constructor(
                     forwardIcon ?: DEFAULT_FORWARD_ICON,
                     FORWARD,
                     instanceId
+                ),
+                STOP to createNotificationAction(
+                    stopIcon ?: DEFAULT_STOP_ICON,
+                    STOP,
+                    instanceId
                 )
             )
         }
 
         override fun getCustomActions(player: Player): List<String> {
+            if (!needsCustomActionsToAddMissingButtons) return emptyList()
             return buttons.mapNotNull {
                 when (it) {
-                    is NotificationButton.STOP -> {
-                        STOP
+                    is NotificationButton.BACKWARD -> {
+                        REWIND
                     }
                     is NotificationButton.FORWARD -> {
                         FORWARD
                     }
-                    is NotificationButton.BACKWARD -> {
-                        REWIND
+                    is NotificationButton.STOP -> {
+                        STOP
                     }
                     else -> {
                         null
@@ -315,20 +321,20 @@ class NotificationManager internal constructor(
                     is NotificationButton.PLAY_PAUSE -> {
                         PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE
                     }
-                    is NotificationButton.STOP -> {
-                        stopIcon = button.icon ?: stopIcon
-                        PlaybackStateCompat.ACTION_STOP
+                    is NotificationButton.BACKWARD -> {
+                        rewindIcon = button.icon ?: rewindIcon
+                        PlaybackStateCompat.ACTION_REWIND
                     }
                     is NotificationButton.FORWARD -> {
                         forwardIcon = button.icon ?: forwardIcon
                         PlaybackStateCompat.ACTION_FAST_FORWARD
                     }
-                    is NotificationButton.BACKWARD -> {
-                        rewindIcon = button.icon ?: rewindIcon
-                        PlaybackStateCompat.ACTION_REWIND
-                    }
                     is NotificationButton.SEEK_TO -> {
                         PlaybackStateCompat.ACTION_SEEK_TO
+                    }
+                    is NotificationButton.STOP -> {
+                        stopIcon = button.icon ?: stopIcon
+                        PlaybackStateCompat.ACTION_STOP
                     }
                     else -> {
                         0
@@ -362,7 +368,6 @@ class NotificationManager internal constructor(
                 player: Player,
                 callback: PlayerNotificationManager.BitmapCallback,
             ): Bitmap? {
-                val holder = getCurrentItemHolder() ?: return null
                 val source = notificationMetadata?.artworkUrl ?: player.mediaMetadata.artworkUri
                 val data = player.mediaMetadata.artworkData
 
@@ -374,8 +379,8 @@ class NotificationManager internal constructor(
                     return null
                 }
 
-                if (holder.artworkBitmap != null) {
-                    return holder.artworkBitmap
+                if (currentItemHolder.artworkBitmap != null) {
+                    return currentItemHolder.artworkBitmap
                 }
 
                 context.imageLoader.enqueue(
@@ -383,32 +388,43 @@ class NotificationManager internal constructor(
                         .data(source)
                         .target { result ->
                             val bitmap = (result as BitmapDrawable).bitmap
-                            holder.artworkBitmap = bitmap
+                            currentItemHolder.artworkBitmap = bitmap
                             callback.onBitmap(bitmap)
                         }
                         .build()
                 )
-                return holder.artworkBitmap
+                return currentItemHolder.artworkBitmap
             }
         }
 
-        val customActionProviders = buttons.mapNotNull {
-            when (it) {
-                is NotificationButton.STOP -> {
-                    createMediaSessionAction(stopIcon ?: DEFAULT_STOP_ICON, STOP)
+        if (needsCustomActionsToAddMissingButtons) {
+            val customActionProviders = buttons
+                .sortedBy {
+                    when (it) {
+                        is NotificationButton.BACKWARD -> 1
+                        is NotificationButton.FORWARD -> 2
+                        is NotificationButton.STOP -> 3
+                        else -> 4
+                    }
                 }
-                is NotificationButton.FORWARD -> {
-                    createMediaSessionAction(forwardIcon ?: DEFAULT_FORWARD_ICON, FORWARD)
+                .mapNotNull {
+                    when (it) {
+                        is NotificationButton.BACKWARD -> {
+                            createMediaSessionAction(rewindIcon ?: DEFAULT_REWIND_ICON, REWIND)
+                        }
+                        is NotificationButton.FORWARD -> {
+                            createMediaSessionAction(forwardIcon ?: DEFAULT_FORWARD_ICON, FORWARD)
+                        }
+                        is NotificationButton.STOP -> {
+                            createMediaSessionAction(stopIcon ?: DEFAULT_STOP_ICON, STOP)
+                        }
+                        else -> {
+                            null
+                        }
+                    }
                 }
-                is NotificationButton.BACKWARD -> {
-                    createMediaSessionAction(rewindIcon ?: DEFAULT_REWIND_ICON, REWIND)
-                }
-                else -> {
-                    null
-                }
-            }
+            mediaSessionConnector.setCustomActionProviders(*customActionProviders.toTypedArray())
         }
-        mediaSessionConnector.setCustomActionProviders(*customActionProviders.toTypedArray())
 
         internalNotificationManager =
             PlayerNotificationManager.Builder(context, NOTIFICATION_ID, CHANNEL_ID)
@@ -545,6 +561,10 @@ class NotificationManager internal constructor(
     }
 
     companion object {
+        // Due to the removal of rewind, forward, and stop buttons from the standard notification
+        // controls in Android 13, custom actions are implemented to support them
+        // https://developer.android.com/about/versions/13/behavior-changes-13#playback-controls
+        private val needsCustomActionsToAddMissingButtons = Build.VERSION.SDK_INT >= 33
         private const val REWIND = "rewind"
         private const val FORWARD = "forward"
         private const val STOP = "stop"
